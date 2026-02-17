@@ -3,62 +3,96 @@ package main
 import (
 	"fmt"
 
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
 )
 
-func LoadConfig(data []byte) (yaml.MapSlice, error) {
-	var out yaml.MapSlice
-	if err := yaml.Unmarshal(data, &out); err != nil {
+func LoadConfig(data []byte) (*yaml.Node, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return nil, fmt.Errorf("unmarshal config: %w", err)
 	}
-	return out, nil
+	// The unmarshalled node is a document node; we want the first content (the map)
+	if len(doc.Content) == 0 {
+		return nil, fmt.Errorf("empty document")
+	}
+	return doc.Content[0], nil
 }
 
-func SaveConfig(c yaml.MapSlice) ([]byte, error) {
+func SaveConfig(c *yaml.Node) ([]byte, error) {
 	return yaml.Marshal(c)
 }
 
-func Get(c yaml.MapSlice, key string) (interface{}, bool) {
-	for _, item := range c {
-		if k, ok := item.Key.(string); ok && k == key {
-			return item.Value, true
+func Get(c *yaml.Node, key string) (interface{}, bool) {
+	if c.Kind != yaml.MappingNode {
+		return nil, false
+	}
+	for i := 0; i < len(c.Content); i += 2 {
+		if i+1 < len(c.Content) && c.Content[i].Value == key {
+			// Decode the value node into an interface{}
+			var val interface{}
+			if err := c.Content[i+1].Decode(&val); err == nil {
+				return val, true
+			}
+			return nil, false
 		}
 	}
 	return nil, false
 }
 
-func Merge(base, overrides yaml.MapSlice) yaml.MapSlice {
+func Merge(base, overrides *yaml.Node) *yaml.Node {
+	if base.Kind != yaml.MappingNode || overrides.Kind != yaml.MappingNode {
+		return base
+	}
+
 	seen := make(map[string]bool)
-	var out yaml.MapSlice
-	for _, item := range base {
-		k, ok := item.Key.(string)
-		if !ok {
-			out = append(out, item)
-			continue
+	var content []*yaml.Node
+
+	// Process base nodes
+	for i := 0; i < len(base.Content); i += 2 {
+		if i+1 >= len(base.Content) {
+			break
 		}
+		keyNode := base.Content[i]
+		valueNode := base.Content[i+1]
+		k := keyNode.Value
+
 		seen[k] = true
-		if v, found := getKey(overrides, k); found {
-			out = append(out, yaml.MapItem{Key: k, Value: v})
+		if overrideValue := getKeyNode(overrides, k); overrideValue != nil {
+			content = append(content, keyNode, overrideValue)
 		} else {
-			out = append(out, item)
+			content = append(content, keyNode, valueNode)
 		}
 	}
-	for _, item := range overrides {
-		k, ok := item.Key.(string)
-		if !ok || seen[k] {
-			continue
+
+	// Add new keys from overrides
+	for i := 0; i < len(overrides.Content); i += 2 {
+		if i+1 >= len(overrides.Content) {
+			break
 		}
-		seen[k] = true
-		out = append(out, item)
+		keyNode := overrides.Content[i]
+		valueNode := overrides.Content[i+1]
+		k := keyNode.Value
+
+		if !seen[k] {
+			seen[k] = true
+			content = append(content, keyNode, valueNode)
+		}
 	}
-	return out
+
+	return &yaml.Node{
+		Kind:    yaml.MappingNode,
+		Content: content,
+	}
 }
 
-func getKey(c yaml.MapSlice, key string) (interface{}, bool) {
-	for _, item := range c {
-		if k, ok := item.Key.(string); ok && k == key {
-			return item.Value, true
+func getKeyNode(c *yaml.Node, key string) *yaml.Node {
+	if c.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i < len(c.Content); i += 2 {
+		if i+1 < len(c.Content) && c.Content[i].Value == key {
+			return c.Content[i+1]
 		}
 	}
-	return nil, false
+	return nil
 }

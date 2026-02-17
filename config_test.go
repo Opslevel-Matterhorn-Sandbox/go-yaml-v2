@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
 )
 
 func TestLoadConfig(t *testing.T) {
@@ -12,18 +12,27 @@ func TestLoadConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	if len(cfg) != 3 {
-		t.Errorf("expected 3 items, got %d", len(cfg))
+	if cfg.Kind != yaml.MappingNode {
+		t.Fatalf("expected MappingNode, got %v", cfg.Kind)
 	}
-	if cfg[0].Key != "a" || cfg[1].Key != "b" || cfg[2].Key != "c" {
-		t.Errorf("key order not preserved: %v", cfg)
+	// Content has 6 nodes: 3 keys + 3 values
+	if len(cfg.Content) != 6 {
+		t.Errorf("expected 6 nodes (3 key-value pairs), got %d", len(cfg.Content))
+	}
+	if cfg.Content[0].Value != "a" || cfg.Content[2].Value != "b" || cfg.Content[4].Value != "c" {
+		t.Errorf("key order not preserved")
 	}
 }
 
 func TestSaveConfig(t *testing.T) {
-	cfg := yaml.MapSlice{
-		{Key: "name", Value: "test"},
-		{Key: "version", Value: "2.0"},
+	cfg := &yaml.Node{
+		Kind: yaml.MappingNode,
+		Content: []*yaml.Node{
+			{Kind: yaml.ScalarNode, Value: "name"},
+			{Kind: yaml.ScalarNode, Value: "test"},
+			{Kind: yaml.ScalarNode, Value: "version"},
+			{Kind: yaml.ScalarNode, Value: "2.0"},
+		},
 	}
 	out, err := SaveConfig(cfg)
 	if err != nil {
@@ -33,15 +42,20 @@ func TestSaveConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig round-trip: %v", err)
 	}
-	if len(roundTrip) != 2 {
-		t.Errorf("round-trip length: got %d", len(roundTrip))
+	if len(roundTrip.Content) != 4 {
+		t.Errorf("round-trip length: got %d nodes (expected 4)", len(roundTrip.Content))
 	}
 }
 
 func TestGet(t *testing.T) {
-	cfg := yaml.MapSlice{
-		{Key: "name", Value: "myapp"},
-		{Key: "count", Value: 42},
+	cfg := &yaml.Node{
+		Kind: yaml.MappingNode,
+		Content: []*yaml.Node{
+			{Kind: yaml.ScalarNode, Value: "name"},
+			{Kind: yaml.ScalarNode, Value: "myapp"},
+			{Kind: yaml.ScalarNode, Value: "count"},
+			{Kind: yaml.ScalarNode, Value: "42"},
+		},
 	}
 	v, ok := Get(cfg, "name")
 	if !ok || v != "myapp" {
@@ -58,18 +72,29 @@ func TestGet(t *testing.T) {
 }
 
 func TestMerge(t *testing.T) {
-	base := yaml.MapSlice{
-		{Key: "name", Value: "app"},
-		{Key: "env", Value: "dev"},
-		{Key: "replicas", Value: 1},
+	base := &yaml.Node{
+		Kind: yaml.MappingNode,
+		Content: []*yaml.Node{
+			{Kind: yaml.ScalarNode, Value: "name"},
+			{Kind: yaml.ScalarNode, Value: "app"},
+			{Kind: yaml.ScalarNode, Value: "env"},
+			{Kind: yaml.ScalarNode, Value: "dev"},
+			{Kind: yaml.ScalarNode, Value: "replicas"},
+			{Kind: yaml.ScalarNode, Value: "1"},
+		},
 	}
-	ov := yaml.MapSlice{
-		{Key: "env", Value: "prod"},
-		{Key: "replicas", Value: 5},
+	ov := &yaml.Node{
+		Kind: yaml.MappingNode,
+		Content: []*yaml.Node{
+			{Kind: yaml.ScalarNode, Value: "env"},
+			{Kind: yaml.ScalarNode, Value: "prod"},
+			{Kind: yaml.ScalarNode, Value: "replicas"},
+			{Kind: yaml.ScalarNode, Value: "5"},
+		},
 	}
 	merged := Merge(base, ov)
-	if len(merged) != 3 {
-		t.Fatalf("merged length: got %d", len(merged))
+	if len(merged.Content) != 6 {
+		t.Fatalf("merged length: got %d nodes (expected 6)", len(merged.Content))
 	}
 	if v, _ := Get(merged, "name"); v != "app" {
 		t.Errorf("name: got %v", v)
@@ -80,33 +105,48 @@ func TestMerge(t *testing.T) {
 	if v, _ := Get(merged, "replicas"); v != 5 {
 		t.Errorf("replicas: got %v", v)
 	}
-	if merged[0].Key != "name" || merged[1].Key != "env" || merged[2].Key != "replicas" {
-		t.Errorf("merge order: %v", merged)
+	if merged.Content[0].Value != "name" || merged.Content[2].Value != "env" || merged.Content[4].Value != "replicas" {
+		t.Errorf("merge order not preserved")
 	}
 }
 
 func TestMergeAddNewKeys(t *testing.T) {
-	base := yaml.MapSlice{
-		{Key: "a", Value: 1},
+	base := &yaml.Node{
+		Kind: yaml.MappingNode,
+		Content: []*yaml.Node{
+			{Kind: yaml.ScalarNode, Value: "a"},
+			{Kind: yaml.ScalarNode, Value: "1"},
+		},
 	}
-	ov := yaml.MapSlice{
-		{Key: "b", Value: 2},
-		{Key: "c", Value: 3},
+	ov := &yaml.Node{
+		Kind: yaml.MappingNode,
+		Content: []*yaml.Node{
+			{Kind: yaml.ScalarNode, Value: "b"},
+			{Kind: yaml.ScalarNode, Value: "2"},
+			{Kind: yaml.ScalarNode, Value: "c"},
+			{Kind: yaml.ScalarNode, Value: "3"},
+		},
 	}
 	merged := Merge(base, ov)
-	if len(merged) != 3 {
-		t.Fatalf("merged length: got %d", len(merged))
+	if len(merged.Content) != 6 {
+		t.Fatalf("merged length: got %d nodes (expected 6)", len(merged.Content))
 	}
-	if merged[0].Key != "a" || merged[1].Key != "b" || merged[2].Key != "c" {
-		t.Errorf("merge order: %v", merged)
+	if merged.Content[0].Value != "a" || merged.Content[2].Value != "b" || merged.Content[4].Value != "c" {
+		t.Errorf("merge order not preserved")
 	}
 }
 
 func TestMapItemPreservesOrder(t *testing.T) {
-	var slice yaml.MapSlice
-	slice = append(slice, yaml.MapItem{Key: "first", Value: 1})
-	slice = append(slice, yaml.MapItem{Key: "second", Value: 2})
-	out, err := yaml.Marshal(slice)
+	node := &yaml.Node{
+		Kind: yaml.MappingNode,
+		Content: []*yaml.Node{
+			{Kind: yaml.ScalarNode, Value: "first"},
+			{Kind: yaml.ScalarNode, Value: "1"},
+			{Kind: yaml.ScalarNode, Value: "second"},
+			{Kind: yaml.ScalarNode, Value: "2"},
+		},
+	}
+	out, err := yaml.Marshal(node)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +154,7 @@ func TestMapItemPreservesOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if back[0].Key != "first" || back[1].Key != "second" {
-		t.Errorf("order changed: %v", back)
+	if back.Content[0].Value != "first" || back.Content[2].Value != "second" {
+		t.Errorf("order changed")
 	}
 }
