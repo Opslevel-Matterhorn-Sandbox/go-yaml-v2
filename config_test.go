@@ -3,8 +3,38 @@ package main
 import (
 	"testing"
 
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
 )
+
+// makeMapping is a helper that builds a Config (MappingNode) from alternating
+// string key / interface{} value pairs.
+func makeMapping(pairs ...interface{}) Config {
+	node := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	for i := 0; i+1 < len(pairs); i += 2 {
+		key := pairs[i].(string)
+		val := pairs[i+1]
+
+		keyNode := &yaml.Node{}
+		if err := keyNode.Encode(key); err != nil {
+			panic(err)
+		}
+		// Encode wraps in a DocumentNode; unwrap it.
+		if keyNode.Kind == yaml.DocumentNode {
+			keyNode = keyNode.Content[0]
+		}
+
+		valNode := &yaml.Node{}
+		if err := valNode.Encode(val); err != nil {
+			panic(err)
+		}
+		if valNode.Kind == yaml.DocumentNode {
+			valNode = valNode.Content[0]
+		}
+
+		node.Content = append(node.Content, keyNode, valNode)
+	}
+	return node
+}
 
 func TestLoadConfig(t *testing.T) {
 	data := []byte("a: 1\nb: 2\nc: 3")
@@ -12,19 +42,20 @@ func TestLoadConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	if len(cfg) != 3 {
-		t.Errorf("expected 3 items, got %d", len(cfg))
+	// A mapping node with 3 key-value pairs has 6 content entries.
+	if len(cfg.Content) != 6 {
+		t.Errorf("expected 6 content nodes (3 pairs), got %d", len(cfg.Content))
 	}
-	if cfg[0].Key != "a" || cfg[1].Key != "b" || cfg[2].Key != "c" {
-		t.Errorf("key order not preserved: %v", cfg)
+	keys := []string{"a", "b", "c"}
+	for i, want := range keys {
+		if cfg.Content[i*2].Value != want {
+			t.Errorf("key[%d]: got %q, want %q", i, cfg.Content[i*2].Value, want)
+		}
 	}
 }
 
 func TestSaveConfig(t *testing.T) {
-	cfg := yaml.MapSlice{
-		{Key: "name", Value: "test"},
-		{Key: "version", Value: "2.0"},
-	}
+	cfg := makeMapping("name", "test", "version", "2.0")
 	out, err := SaveConfig(cfg)
 	if err != nil {
 		t.Fatalf("SaveConfig: %v", err)
@@ -33,16 +64,14 @@ func TestSaveConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig round-trip: %v", err)
 	}
-	if len(roundTrip) != 2 {
-		t.Errorf("round-trip length: got %d", len(roundTrip))
+	// Expect 2 key-value pairs = 4 content nodes.
+	if len(roundTrip.Content) != 4 {
+		t.Errorf("round-trip length: got %d content nodes, want 4", len(roundTrip.Content))
 	}
 }
 
 func TestGet(t *testing.T) {
-	cfg := yaml.MapSlice{
-		{Key: "name", Value: "myapp"},
-		{Key: "count", Value: 42},
-	}
+	cfg := makeMapping("name", "myapp", "count", 42)
 	v, ok := Get(cfg, "name")
 	if !ok || v != "myapp" {
 		t.Errorf("Get(name): got %v, %v", v, ok)
@@ -58,18 +87,12 @@ func TestGet(t *testing.T) {
 }
 
 func TestMerge(t *testing.T) {
-	base := yaml.MapSlice{
-		{Key: "name", Value: "app"},
-		{Key: "env", Value: "dev"},
-		{Key: "replicas", Value: 1},
-	}
-	ov := yaml.MapSlice{
-		{Key: "env", Value: "prod"},
-		{Key: "replicas", Value: 5},
-	}
+	base := makeMapping("name", "app", "env", "dev", "replicas", 1)
+	ov := makeMapping("env", "prod", "replicas", 5)
 	merged := Merge(base, ov)
-	if len(merged) != 3 {
-		t.Fatalf("merged length: got %d", len(merged))
+	// 3 key-value pairs = 6 content nodes.
+	if len(merged.Content) != 6 {
+		t.Fatalf("merged content length: got %d, want 6", len(merged.Content))
 	}
 	if v, _ := Get(merged, "name"); v != "app" {
 		t.Errorf("name: got %v", v)
@@ -80,33 +103,32 @@ func TestMerge(t *testing.T) {
 	if v, _ := Get(merged, "replicas"); v != 5 {
 		t.Errorf("replicas: got %v", v)
 	}
-	if merged[0].Key != "name" || merged[1].Key != "env" || merged[2].Key != "replicas" {
-		t.Errorf("merge order: %v", merged)
+	// Order: name, env, replicas
+	if merged.Content[0].Value != "name" || merged.Content[2].Value != "env" || merged.Content[4].Value != "replicas" {
+		t.Errorf("merge order: keys are %q, %q, %q",
+			merged.Content[0].Value, merged.Content[2].Value, merged.Content[4].Value)
 	}
 }
 
 func TestMergeAddNewKeys(t *testing.T) {
-	base := yaml.MapSlice{
-		{Key: "a", Value: 1},
-	}
-	ov := yaml.MapSlice{
-		{Key: "b", Value: 2},
-		{Key: "c", Value: 3},
-	}
+	base := makeMapping("a", 1)
+	ov := makeMapping("b", 2, "c", 3)
 	merged := Merge(base, ov)
-	if len(merged) != 3 {
-		t.Fatalf("merged length: got %d", len(merged))
+	// 3 key-value pairs = 6 content nodes.
+	if len(merged.Content) != 6 {
+		t.Fatalf("merged content length: got %d, want 6", len(merged.Content))
 	}
-	if merged[0].Key != "a" || merged[1].Key != "b" || merged[2].Key != "c" {
-		t.Errorf("merge order: %v", merged)
+	keys := []string{"a", "b", "c"}
+	for i, want := range keys {
+		if merged.Content[i*2].Value != want {
+			t.Errorf("key[%d]: got %q, want %q", i, merged.Content[i*2].Value, want)
+		}
 	}
 }
 
 func TestMapItemPreservesOrder(t *testing.T) {
-	var slice yaml.MapSlice
-	slice = append(slice, yaml.MapItem{Key: "first", Value: 1})
-	slice = append(slice, yaml.MapItem{Key: "second", Value: 2})
-	out, err := yaml.Marshal(slice)
+	cfg := makeMapping("first", 1, "second", 2)
+	out, err := yaml.Marshal(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +136,7 @@ func TestMapItemPreservesOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if back[0].Key != "first" || back[1].Key != "second" {
-		t.Errorf("order changed: %v", back)
+	if back.Content[0].Value != "first" || back.Content[2].Value != "second" {
+		t.Errorf("order changed: %q, %q", back.Content[0].Value, back.Content[2].Value)
 	}
 }
