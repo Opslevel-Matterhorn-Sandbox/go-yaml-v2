@@ -3,62 +3,88 @@ package main
 import (
 	"fmt"
 
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
 )
 
-func LoadConfig(data []byte) (yaml.MapSlice, error) {
-	var out yaml.MapSlice
-	if err := yaml.Unmarshal(data, &out); err != nil {
+// Config is an order-preserving YAML mapping represented as a yaml.Node.
+type Config = *yaml.Node
+
+// LoadConfig parses YAML data and returns the top-level mapping node.
+func LoadConfig(data []byte) (Config, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return nil, fmt.Errorf("unmarshal config: %w", err)
 	}
-	return out, nil
+	if doc.Kind == yaml.DocumentNode && len(doc.Content) > 0 {
+		return doc.Content[0], nil
+	}
+	// Return an empty mapping node when the input is empty.
+	return &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}, nil
 }
 
-func SaveConfig(c yaml.MapSlice) ([]byte, error) {
+// SaveConfig marshals the mapping node back to YAML bytes.
+func SaveConfig(c Config) ([]byte, error) {
 	return yaml.Marshal(c)
 }
 
-func Get(c yaml.MapSlice, key string) (interface{}, bool) {
-	for _, item := range c {
-		if k, ok := item.Key.(string); ok && k == key {
-			return item.Value, true
+// Get returns the value associated with key in the mapping node, preserving
+// insertion order. The node Content holds alternating key/value pairs.
+func Get(c Config, key string) (interface{}, bool) {
+	if c == nil || c.Kind != yaml.MappingNode {
+		return nil, false
+	}
+	for i := 0; i+1 < len(c.Content); i += 2 {
+		if c.Content[i].Value == key {
+			var v interface{}
+			if err := c.Content[i+1].Decode(&v); err == nil {
+				return v, true
+			}
 		}
 	}
 	return nil, false
 }
 
-func Merge(base, overrides yaml.MapSlice) yaml.MapSlice {
+// Merge produces a new Config that starts with all keys from base, with any
+// values overridden by overrides, and then appends any extra keys from
+// overrides that were not present in base. Key order is preserved.
+func Merge(base, overrides Config) Config {
+	out := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+
 	seen := make(map[string]bool)
-	var out yaml.MapSlice
-	for _, item := range base {
-		k, ok := item.Key.(string)
-		if !ok {
-			out = append(out, item)
-			continue
-		}
+
+	// Walk base entries; override value when the key exists in overrides.
+	for i := 0; i+1 < len(base.Content); i += 2 {
+		keyNode := base.Content[i]
+		k := keyNode.Value
 		seen[k] = true
-		if v, found := getKey(overrides, k); found {
-			out = append(out, yaml.MapItem{Key: k, Value: v})
+		if ov := findValue(overrides, k); ov != nil {
+			out.Content = append(out.Content, keyNode, ov)
 		} else {
-			out = append(out, item)
+			out.Content = append(out.Content, keyNode, base.Content[i+1])
 		}
 	}
-	for _, item := range overrides {
-		k, ok := item.Key.(string)
-		if !ok || seen[k] {
-			continue
+
+	// Append keys from overrides that were not in base.
+	for i := 0; i+1 < len(overrides.Content); i += 2 {
+		k := overrides.Content[i].Value
+		if !seen[k] {
+			seen[k] = true
+			out.Content = append(out.Content, overrides.Content[i], overrides.Content[i+1])
 		}
-		seen[k] = true
-		out = append(out, item)
 	}
+
 	return out
 }
 
-func getKey(c yaml.MapSlice, key string) (interface{}, bool) {
-	for _, item := range c {
-		if k, ok := item.Key.(string); ok && k == key {
-			return item.Value, true
+// findValue returns the value node for key in a mapping node, or nil.
+func findValue(c Config, key string) *yaml.Node {
+	if c == nil || c.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(c.Content); i += 2 {
+		if c.Content[i].Value == key {
+			return c.Content[i+1]
 		}
 	}
-	return nil, false
+	return nil
 }
